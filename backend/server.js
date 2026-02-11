@@ -21,7 +21,7 @@ app.get('/', (req, res) => {
   res.send('API works correctly!');
 });
 
-const authRoutes = require('./routes/authRoutes')
+const authRoutes = require('./routes/auth.route')
 
 app.use('/auth',authRoutes)
 
