@@ -1,40 +1,45 @@
 const jwt = require("jsonwebtoken");
-const models = require("../models");
-const { Session, Users } = models;
+const { Sessions, Users } = require("../models");
+const hashToken = require("../utils/hashToken");
 
 module.exports = async (req, res, next) => {
     try {
-        const token = req.cookies.access_token;
-        if (!token) {
-            return res.status(401).json({ message: "Missing Token" });
+        const accessToken = req.cookies.access_token;
+        const refreshToken = req.cookies.refresh_token;
+
+        if (!accessToken || !refreshToken) {
+            return res.status(401).json({ message: "Missing tokens" });
         }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const session = await Session.findOne({
+        const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+
+        const refreshTokenHash = hashToken(refreshToken);
+
+        const session = await Sessions.findOne({
             where: {
-                refresh_token_hash: token,
+                refresh_token_hash: refreshTokenHash,
                 is_revoked: false
             },
-            include: [
-                {
-                    model: Users,
-                    as: "user",
-                }
-            ]
+            include: [{
+                model: Users,
+                as: "user"
+            }]
         });
+
         if (!session) {
-            return res.status(401).json({ message: "Invalid or expired session" });
+            return res.status(401).json({ message: "Invalid session" });
         }
 
         if (new Date() > session.expires_at) {
             await session.update({ is_revoked: true });
-            return res.status(401).json({ message: "expired Session " });
+            return res.status(401).json({ message: "Session expired" });
         }
 
         req.user = {
             id_user: decoded.sub,
-            role: decoded.role,
-            email: session.user.email
+            roles: decoded.roles,
+            email: session.user.email,
+            is_email_verified: session.user.is_email_verified
         };
 
         req.session = session;
@@ -42,6 +47,7 @@ module.exports = async (req, res, next) => {
         next();
 
     } catch (err) {
-        return res.status(403).json({ message: "Invalid Token " });
+        console.error("auth.middleware error:", err);
+        return res.status(403).json({ message: "Invalid token" });
     }
 };

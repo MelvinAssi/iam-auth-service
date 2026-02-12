@@ -1,11 +1,10 @@
-// services/mail/verifyEmail.mail.js
 const transporter = require("./mailer");
 
 module.exports.sendVerifyEmail = async ({ to, token }) => {
     const link = `${process.env.FRONT_URL}/verify-email?token=${token}`;
 
     await transporter.sendMail({
-        from: `"Auth App" <${process.env.SMTP_MAIL}>`,
+        from: `"IAM Auth Service App" <${process.env.SMTP_MAIL}>`,
         to,
         subject: "Verify your email",
         html: `
@@ -42,32 +41,27 @@ module.exports.sendVerifyEmail = async ({ to, token }) => {
                                                 <tr>
                                                     <td align="center">
                                                         <a href="${link}" style="background-color:#4253bd;
-                                            color:#ffffff;
-                                            text-decoration:none;
-                                            padding:15px 30px;
-                                            border-radius:5px;
-                                            font-weight:bold;
-                                            display:inline-block;">
+                                                        color:#ffffff;
+                                                        text-decoration:none;
+                                                        padding:15px 30px;
+                                                        border-radius:5px;
+                                                        font-weight:bold;
+                                                        display:inline-block;">
                                                             Verify email
                                                         </a>
                                                     </td>
                                                 </tr>
                                             </table>
-
                                             <p style="font-size:14px; color:#666666;">
                                                 This link expires in 24 hours.
                                             </p>
                                         </td>
                                     </tr>
-
                                 </table>
-
                             </td>
                         </tr>
                     </table>
-
                 </body>
-
             </html>
     `,
     });

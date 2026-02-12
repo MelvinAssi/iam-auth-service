@@ -194,13 +194,17 @@ module.exports = {
         type: Sequelize.BOOLEAN,
         allowNull: false,
       },
+      identifier_attempted: {
+        type: Sequelize.STRING(100),
+        allowNull: false,
+      },
       created_at: {
         type: Sequelize.DATE,
         defaultValue: Sequelize.literal('now()'),
       },
       user_id: {
         type: Sequelize.UUID,
-        allowNull: false,
+        allowNull: true,
         references: { model: 'users', key: 'id_user' },
         onDelete: 'CASCADE',
       },
@@ -252,6 +256,17 @@ module.exports = {
         type: Sequelize.TEXT,
         allowNull: false,
       },
+      target_type: {
+        type: Sequelize.STRING(50),
+        allowNull: true,
+      },
+      target_id: {
+        type: Sequelize.UUID,
+        allowNull: true,
+      },
+
+      ip_address: Sequelize.TEXT,
+      user_agent: Sequelize.TEXT,
       created_at: {
         type: Sequelize.DATE,
         defaultValue: Sequelize.literal('now()'),

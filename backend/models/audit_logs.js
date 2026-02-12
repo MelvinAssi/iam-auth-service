@@ -27,6 +27,22 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.TEXT,
             allowNull: false,
         },
+        target_type: {
+            type: DataTypes.STRING(50),
+            allowNull: true,
+        },
+        target_id: {
+            type: DataTypes.UUID,
+            allowNull: true,
+        },
+        ip_address: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+        },
+        user_agent: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+        },
         user_id: {
             type: DataTypes.UUID,
             allowNull: true,

@@ -10,8 +10,9 @@ const { Op } = require("sequelize");
 const generateToken = require("../utils/generateToken");
 const hashToken = require("../utils/hashToken");
 const { sendVerifyEmail, sendResetPasswordEmail } = require("../services/mail");
+const { verifyGoogleToken } = require("../services/oauth/verifyGoogleToken");
 
-const { Users, Roles, UserRoles, UserCredentials, Sessions, LoginAttempts, EmailVerificationTokens, PasswordResetTokens } = models
+const { Users, Roles, UserRoles, UserCredentials, Sessions, LoginAttempts, EmailVerificationTokens, PasswordResetTokens, OAuthAccounts } = models
 
 
 exports.registerUser = async (req, res) => {
@@ -168,9 +169,28 @@ exports.loginUser = async (req, res) => {
     }
 };
 
+exports.authWithGoogle = async (req, res) => {
+    try {
+        const { token } = req.body;
+        const payload = await verifyGoogleToken(token);
+        const { sub: googleId, email, given_name, family_name } = payload;
+
+        const { user, isNew } = await handleOAuth({
+            provider: 'google',
+            providerId: googleId,
+            email,
+            info: { name: family_name, firstname: given_name },
+        });
+
+        return issueAuthTokens(res, user, attempt = null, isNew);
+    } catch (error) {
+        console.error(error);
+        res.status(401).json({ message: 'Erreur authentification Google' });
+    }
+};
+
 exports.logoutUser = async (req, res) => {
     try {
-        console.log(req.session)
         await req.session.update({ is_revoked: true });
 
         res.clearCookie("token");
@@ -181,6 +201,61 @@ exports.logoutUser = async (req, res) => {
         res.status(500).json({ error: "signOut failed" });
     }
 };
+
+exports.refreshTokens = async (req, res) => {
+    const refreshToken = req.cookies.refresh_token;
+
+    if (!refreshToken) {
+        return res.status(401).json({ message: "Missing refresh token" });
+    }
+
+    const refreshTokenHash = hashToken(refreshToken);
+
+    const session = await Sessions.findOne({
+        where: {
+            refresh_token_hash: refreshTokenHash,
+            is_revoked: false
+        }
+    });
+
+    if (!session) {
+        return res.status(401).json({ message: "Invalid session" });
+    }
+
+    if (new Date() > session.expires_at) {
+        await session.update({ is_revoked: true });
+        return res.status(401).json({ message: "Session expired" });
+    }
+
+    const newRefreshToken = generateToken();
+    const newRefreshTokenHash = hashToken(newRefreshToken);
+
+    await session.update({
+        refresh_token_hash: newRefreshTokenHash,
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    const newAccessToken = jwt.sign(
+        { sub: session.user_id },
+        process.env.JWT_SECRET,
+        { expiresIn: "15m" }
+    );
+
+    res.cookie("access_token", newAccessToken, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "None",
+    });
+
+    res.cookie("refresh_token", newRefreshToken, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "None",
+    });
+
+    return res.status(200).json({ success: true });
+};
+
 
 exports.resendEmailVerification = async (req, res) => {
     try {
@@ -308,7 +383,6 @@ exports.verifyEmail = async (req, res) => {
     }
 };
 
-
 exports.requestPasswordReset = async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -345,6 +419,7 @@ exports.requestPasswordReset = async (req, res) => {
         return res.status(500).json({ error: "Server error" });
     }
 }
+
 exports.resetPasswordWithToken = async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -392,12 +467,16 @@ exports.resetPasswordWithToken = async (req, res) => {
                 }
             );
 
-
             await verificationToken.update(
                 {
                     used_at: new Date(),
                 },
                 { transaction: t }
+            );
+
+            await Sessions.update(
+                { is_revoked: true },
+                { where: { user_id: user.id_user }, transaction: t }
             );
 
         })
@@ -407,8 +486,47 @@ exports.resetPasswordWithToken = async (req, res) => {
         return res.status(500).json({ error: "Server error" });
     }
 }
+exports.getActiveSessions = async (req, res) => {
+    try {
+        const id_user = req.user.id_user;
+        const sessions = await Sessions.findAll(
+            {
+                where: {
+                    user_id: id_user,
+                    is_revoked: false,
+                },
+            });
+        return res.status(200).json({
+            sessions
+        });
 
+    } catch (err) {
+        console.error("getActiveSessions error:", err);
+        return res.status(500).json({ error: "Server error" });
+    }
+};
+exports.deleteActiveSession = async (req, res) => {
+    try {
+        const id_user = req.user.id_user;
+        const { id } = req.params;
+        const session = await Sessions.update(
+            { is_revoked: true },
+            {
+                where: {
+                    id_session: id,
+                    user_id: id_user,
+                    is_revoked: false,
+                },
+            });
+        return res.status(200).json({
+            session
+        });
 
+    } catch (err) {
+        console.error("getActiveSessions error:", err);
+        return res.status(500).json({ error: "Server error" });
+    }
+};
 exports.getCurrentUser = async (req, res) => {
     try {
         const user = await Users.findByPk(req.user.id_user, {
@@ -454,7 +572,8 @@ const issueAuthTokens = async ({ req, res, user, attempt = null, isNew = false, 
     const refreshToken = generateToken();
     const refreshTokenHash = hashToken(refreshToken);
 
-    await Session.update(
+    /* if only one Sessions needed
+    await Sessions.update(
         { is_revoked: true },
         {
             where: {
@@ -463,8 +582,8 @@ const issueAuthTokens = async ({ req, res, user, attempt = null, isNew = false, 
             },
         }
     );
-
-    await Session.create({
+    */
+    await Sessions.create({
         refresh_token_hash: refreshTokenHash,
         ip_address: req.ip,
         user_agent: req.headers["user-agent"],
@@ -498,3 +617,41 @@ const issueAuthTokens = async ({ req, res, user, attempt = null, isNew = false, 
     });
 };
 
+async function handleOAuth({ provider, providerId, email, info }) {
+    let user;
+    let isNew = false;
+
+    await sequelize.transaction(async (t) => {
+
+        user = await Users.findOne({
+            where: { email },
+            transaction: t,
+        });
+
+        if (!user) {
+            user = await Users.create({
+                email,
+                username: info.firstname,
+                is_active: true,
+                is_email_verified: true
+            }, { transaction: t });
+
+            isNew = true;
+        }
+
+        const existingAccount = await OAuthAccounts.findOne({
+            where: { provider, providerId },
+            transaction: t
+        });
+
+        if (!existingAccount) {
+            await OAuthAccounts.create({
+                provider,
+                providerId,
+                user_id: user.id_user
+            }, { transaction: t });
+        }
+    });
+
+    return { user, isNew };
+}

@@ -27,9 +27,13 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.BOOLEAN,
             allowNull: false,
         },
+        identifier_attempted: {
+            type: DataTypes.STRING(100),
+            allowNull: false,
+        },
         user_id: {
             type: DataTypes.UUID,
-            allowNull: false,
+            allowNull: true,
             references: {
                 model: 'users',
                 key: 'id_user',

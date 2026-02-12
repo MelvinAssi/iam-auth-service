@@ -3,7 +3,8 @@ const router = express.Router();
 const {
     registerUser, loginUser, logoutUser, getCurrentUser,
     resendEmailVerification, verifyEmail,
-    requestPasswordReset, resetPasswordWithToken
+    requestPasswordReset, resetPasswordWithToken,
+    refreshTokens
 } = require('../controllers/auth.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
 const { body } = require('express-validator');
@@ -34,6 +35,7 @@ router.post('/signin',
     , loginUser);
 
 router.post('/signout', authMiddleware, logoutUser);
+router.post('/refresh', authMiddleware, refreshTokens);
 router.get("/me", authMiddleware, getCurrentUser);
 
 module.exports = router;
