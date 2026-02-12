@@ -87,13 +87,14 @@ Token is stored hashed for security reasons.
 Token is stored hashed for security reasons.
 
 ### 7. login_attempts
-| Field Name       | Type     | Constraints                 | Description              |
-| ---------------- | -------- | --------------------------- | ------------------------ |
-| id_login_attempt | UUID     | PK, generated automatically | Login attempt identifier |
-| ip_address       | text     | not null                    | Client IP address        |
-| success          | boolean  | not null                    | Login success or failure |
-| created_at       | datetime | not null                    | Attempt date             |
-| id_user          | UUID     | FK → users(id_user)         | Related user             |
+| Field Name           | Type         | Constraints                 | Description              |
+| -------------------- | ------------ | --------------------------- | ------------------------ |
+| id_login_attempt     | UUID         | PK, generated automatically | Login attempt identifier |
+| ip_address           | text         | not null                    | Client IP address        |
+| success              | boolean      | not null                    | Login success or failure |
+| created_at           | datetime     | not null                    | Attempt date             |
+| identifier_attempted | varchar(100) | not null                    | identifier used for log  |
+| id_user              | UUID         | FK → users(id_user)         | Related user             |
 
 ### 8. oauth_accounts
 | Field Name       | Type                       | Constraints                 | Description                           |
@@ -106,13 +107,17 @@ Token is stored hashed for security reasons.
 | id_user          | UUID                       | FK → users(id_user)         | Related user                          |
 
 ### 9. audit_logs
-| Field Name   | Type     | Constraints                 | Description          |
-| ------------ | -------- | --------------------------- | -------------------- |
-| id_audit_log | UUID     | PK, generated automatically | Audit log identifier |
-| metadata     | jsonb    | null                        | Additional metadata  |
-| action       | text     | not null                    | Performed action     |
-| created_at   | datetime | not null                    | Action date          |
-| id_user      | UUID     | FK → users(id_user)         | Related user         |
+| Field Name   | Type        | Constraints                 | Description              |
+| ------------ | ----------- | --------------------------- | ------------------------ |
+| id_audit_log | UUID        | PK, generated automatically | Audit log identifier     |
+| metadata     | jsonb       | null                        | Additional metadata      |
+| action       | text        | not null                    | Performed action         |
+| created_at   | datetime    | not null                    | Action date              |
+| id_user      | UUID        | FK → users(id_user)         | Related user             |
+| target_type  | varchar(50) | null                        | Target entity type       |
+| target_id    | UUID        | null                        | Target entity identifier |
+| ip_address   | text        | not null                    | Origin IP address        |
+| user_agent   | text        | not null                    | Client user agent        |
 
 ### 10. user_roles (Association table)
 | Field Name  | Type     | Constraints             | Description      |
@@ -140,13 +145,13 @@ MPD is a specific implementation for PostgreSQL, including data types, constrain
 1. **users** = (Id_user UUID , email VARCHAR(100), username VARCHAR(100), is_active boolean, is_email_verified boolean, created_at DATETIME, updated_at DATETIME);
 2. **user_credentials** = (Id_user_credential UUID , password_hash TEXT, password_algo TEXT, created_at DATETIME, updated_at DATETIME, #Id_user);
 3. **roles** = (Id_role UUID , name VARCHAR(50), description TEXT);
-   1. **sessions** = (Id_session UUID , refresh_token_hash TEXT, ip_address TEXT, user_agent TEXT, is_revoked boolean, expires_at DATETIME, created_at DATETIME, #Id_user);
-4. **password_reset_tokens**  = (Id_password_reset_token UUID , token_hash TEXT, expires_at DATETIME, used_at DATETIME, #Id_user);
-5. **email_verification_tokens**  = (Id_email_verification_token UUID , token_hash TEXT, expires_at DATETIME, verified_at DATETIME, #Id_user);
-6. **login_attempts**  = (Id_login_attempt UUID , ip_address TEXT, success boolean, created_at DATETIME, #Id_user);
-7. **oauth_accounts**  = (Id_oauth_account UUID , provider oauth_provider_type, provider_id VARCHAR(50), email VARCHAR(50), created_at DATETIME, #Id_user);
-8. **audit_logs**  = (Id_audit_log UUID , metadata jsonb, action TEXT, created_at DATETIME, #Id_user);
-9.  **user_roles** = (#Id_user, #Id_role, assigned_by UUID, assigned_at DATETIME); -- PRIMARY KEY (id_user, id_role)
+4. **sessions** = (Id_session UUID , refresh_token_hash TEXT, ip_address TEXT, user_agent TEXT, is_revoked boolean, expires_at DATETIME, created_at DATETIME, #Id_user);
+5. **password_reset_tokens**  = (Id_password_reset_token UUID , token_hash TEXT, expires_at DATETIME, used_at DATETIME, #Id_user);
+6. **email_verification_tokens**  = (Id_email_verification_token UUID , token_hash TEXT, expires_at DATETIME, verified_at DATETIME, #Id_user);
+7. **login_attempts**  = (Id_login_attempt UUID , ip_address TEXT, success boolean, created_at DATETIME,identifier_attempted varchar(100),#Id_user);
+8. **oauth_accounts**  = (Id_oauth_account UUID , provider oauth_provider_type, provider_id VARCHAR(50), email VARCHAR(50), created_at DATETIME, #Id_user);
+9. **audit_logs** = (Id_audit_log UUID, action TEXT,target_type VARCHAR(50), target_id UUID, ip_address TEXT,user_agent TEXT, metadata JSONB, created_at DATETIME, #Id_user);
+10.  **user_roles** = (#Id_user, #Id_role, assigned_by UUID, assigned_at DATETIME); -- PRIMARY KEY (id_user, id_role)
 
 ### Tables and Constraints
 - Primary keys use `UUID` generated by `gen_random_uuid()` for better security.
@@ -179,8 +184,17 @@ CREATE UNIQUE INDEX ux_users_email ON users(email);
 CREATE UNIQUE INDEX ux_users_username ON users(username);
 
 -- Refresh token lookup
-CREATE UNIQUE INDEX ux_sessions_refresh_token
-ON sessions(refresh_token_hash);
+CREATE INDEX ix_sessions_user_active
+ON sessions(user_id)
+WHERE is_revoked = false;
+
+-- audit lookup
+CREATE INDEX ix_audit_logs_user
+ON audit_logs(user_id);
+
+-- audit lookup
+CREATE INDEX ix_audit_logs_target
+ON audit_logs(target_type, target_id);
 
 -- Active sessions per user
 CREATE INDEX ix_sessions_user_active
