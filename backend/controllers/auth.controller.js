@@ -11,6 +11,7 @@ const generateToken = require("../utils/generateToken");
 const hashToken = require("../utils/hashToken");
 const { sendVerifyEmail, sendResetPasswordEmail } = require("../services/mail");
 const { verifyGoogleToken } = require("../services/oauth/verifyGoogleToken");
+const { logAudit } = require("../services/audit.service");
 
 const { Users, Roles, UserRoles, UserCredentials, Sessions, LoginAttempts, EmailVerificationTokens, PasswordResetTokens, OAuthAccounts } = models
 
@@ -85,9 +86,14 @@ exports.registerUser = async (req, res) => {
                 to: user.email,
                 token,
             };
-
+            await logAudit({
+                action: "USER_REGISTERED",
+                userId: user.id_user,
+                req
+            });
 
         });
+
         await sendVerifyEmail(emailPayload);
         //await issueAuthTokens({ req, res,user,attempt :null,true});
         return res.status(201).json({
@@ -121,48 +127,86 @@ exports.loginUser = async (req, res) => {
             return res.status(400).json({ error: errors.array()[0].msg });
         }
         const { email, password, username } = req.body;
-        await sequelize.transaction(async (t) => {
-            const user = await Users.findOne({
-                where: {
-                    [Op.or]: [{ email }, { username }]
-                },
-                include: [
-                    {
-                        model: UserCredentials,
-                        as: 'credentials',
-                        attributes: ["password_hash"]
-                    }
-                ],
-                transaction: t
-            });
+        const user = await Users.findOne({
+            where: {
+                [Op.or]: [{ email }, { username }]
+            },
+            include: [
+                {
+                    model: UserCredentials,
+                    as: 'credentials',
+                    attributes: ["password_hash"]
+                }
+            ]
+        });
 
-            if (!user) {
-                throw new Error("EMAIL_OR_USERNAME_ERROR");  //maybe should include password too 
-            }
-
-            const role = await user.getRoles();
-            console.log(role.map(r => r.name))
-            const attempt = await LoginAttempts.create({
+        if (!user) {
+            await LoginAttempts.create({
                 ip_address: req.ip,
                 success: false,
-                user_id: user.id_user,
-            })
+                identifier_attempted: email || username,
+                user_id: null
+            });
+            await logAudit({
+                action: "USER_LOGIN_FAILED",
+                userId: null,
+                req,
+                metadata: { identifier: email || username }
+            });
+            await new Promise(r => setTimeout(r, 500));
+            throw new Error("EMAIL_OR_USERNAME_ERROR");
+        }
 
-            const isPasswordValid = await argon2.verify(
-                user.credentials.password_hash,
-                password
-            );
-            if (!isPasswordValid) {
-                throw new Error("PASSWORD_ERROR");
+        const recentAttempts = await LoginAttempts.count({
+            where: {
+                identifier_attempted: email || username,
+                success: false,
+                created_at: { [Op.gt]: new Date(Date.now() - 15 * 60 * 1000) },
+                ip_address: req.ip
             }
-            await issueAuthTokens({ req, res, user, attempt });
         });
+
+        if (recentAttempts >= 4) {
+            throw new Error("TOO_MANY_ATTEMPTS");
+        }
+
+        const attempt = await LoginAttempts.create({
+            ip_address: req.ip,
+            success: false,
+            identifier_attempted: email || username,
+            user_id: user.id_user,
+        })
+
+        const isPasswordValid = await argon2.verify(
+            user.credentials.password_hash,
+            password
+        );
+        if (!isPasswordValid) {
+            throw new Error("PASSWORD_ERROR");
+        }
+
+        if (!user.is_active) {
+            throw new Error("ACCOUNT_DISABLED");
+        }
+
+        await issueAuthTokens({ req, res, user, attempt });
+
     } catch (err) {
         console.error("signIN error:", err);
 
         if (err.message === "EMAIL_OR_USERNAME_ERROR" || err.message === "PASSWORD_ERROR") {
             return res.status(400).json({
                 error: "Email or username or password wrong"
+            });
+        }
+        if (err.message === "ACCOUNT_DISABLED") {
+            return res.status(403).json({
+                error: "Account has been disabled"
+            });
+        }
+        if (err.message === "TOO_MANY_ATTEMPTS") {
+            return res.status(403).json({
+                error: "Account has been suppend for 15 min"
             });
         }
         return res.status(500).json({ error: "Server error" });
@@ -182,7 +226,7 @@ exports.authWithGoogle = async (req, res) => {
             info: { name: family_name, firstname: given_name },
         });
 
-        return issueAuthTokens(res, user, attempt = null, isNew);
+        return issueAuthTokens({ req, res, user, attempt: null, isNew });
     } catch (error) {
         console.error(error);
         res.status(401).json({ message: 'Erreur authentification Google' });
@@ -193,7 +237,16 @@ exports.logoutUser = async (req, res) => {
     try {
         await req.session.update({ is_revoked: true });
 
-        res.clearCookie("token");
+        await logAudit({
+            action: "USER_LOGOUT",
+            userId: req.user.id_user,
+            req,
+            targetType: "SESSION",
+            targetId: req.session.id_session
+        });
+
+        res.clearCookie("access_token");
+        res.clearCookie("refresh_token");
 
         return res.status(200).json({ success: true });
 
@@ -214,17 +267,32 @@ exports.refreshTokens = async (req, res) => {
     const session = await Sessions.findOne({
         where: {
             refresh_token_hash: refreshTokenHash,
-            is_revoked: false
+            is_revoked: false,
+            expires_at: { [Op.gt]: new Date() }
         }
     });
 
     if (!session) {
-        return res.status(401).json({ message: "Invalid session" });
-    }
+        // possible reuse attack
+        const compromisedSession = await Sessions.findOne({
+            where: { refresh_token_hash: refreshTokenHash }
+        });
 
-    if (new Date() > session.expires_at) {
-        await session.update({ is_revoked: true });
-        return res.status(401).json({ message: "Session expired" });
+        if (compromisedSession) {
+            await Sessions.update(
+                { is_revoked: true },
+                { where: { user_id: compromisedSession.user_id } }
+            );
+
+            await logAudit({
+                action: "REFRESH_TOKEN_REUSE_DETECTED",
+                userId: compromisedSession.user_id,
+                req,
+                targetType: "SESSION"
+            });
+        }
+
+        return res.status(401).json({ message: "Invalid session" });
     }
 
     const newRefreshToken = generateToken();
@@ -243,14 +311,14 @@ exports.refreshTokens = async (req, res) => {
 
     res.cookie("access_token", newAccessToken, {
         httpOnly: true,
-        secure: true,
-        sameSite: "None",
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax"
     });
 
     res.cookie("refresh_token", newRefreshToken, {
         httpOnly: true,
-        secure: true,
-        sameSite: "None",
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax"
     });
 
     return res.status(200).json({ success: true });
@@ -398,21 +466,32 @@ exports.requestPasswordReset = async (req, res) => {
                 transaction: t
             });
 
-            if (!user) {
-                throw new Error("EMAIL_OR_USERNAME_ERROR");
-            }
-            const { token, hash } = generateToken();
-            const expires_at = new Date(Date.now() + 1 * 60 * 60 * 1000); //This link expires in 1 hour.
+            if (user) {
+                const token = generateToken();
+                const hash = hashToken(token);
 
-            PasswordResetTokens.create({
-                token_hash: hash,
-                expires_at,
-                used_at: null,
-                user_id: user.id_user,
-            })
-            sendResetPasswordEmail(user.email, token);
+                const expires_at = new Date(Date.now() + 1 * 60 * 60 * 1000); //This link expires in 1 hour.
+
+                await PasswordResetTokens.create({
+                    token_hash: hash,
+                    expires_at,
+                    used_at: null,
+                    user_id: user.id_user,
+                })
+
+                await logAudit({
+                    action: "PASSWORD_RESET_REQUESTED",
+                    userId: user.id_user,
+                    req
+                });
+
+                await sendResetPasswordEmail(user.email, token);
+            }
+
 
         })
+
+        return res.status(200).json({ message: "If account exists, email sent" });
 
     } catch (err) {
         console.error(" error:", err);
@@ -479,7 +558,15 @@ exports.resetPasswordWithToken = async (req, res) => {
                 { where: { user_id: user.id_user }, transaction: t }
             );
 
+            await logAudit({
+                action: "PASSWORD_RESET_SUCCESS",
+                userId: user.id_user,
+                req
+            });
+
         })
+
+        return res.status(200).json({ message: "Password updated" });
 
     } catch (err) {
         console.error(" error:", err);
@@ -596,17 +683,23 @@ const issueAuthTokens = async ({ req, res, user, attempt = null, isNew = false, 
         await attempt.update({ success: true });
     }
 
+    await logAudit({
+        action: "USER_LOGIN_SUCCESS",
+        userId: user.id_user,
+        req
+    });
+
     res.cookie("access_token", accessToken, {
         httpOnly: true,
-        secure: true,
-        sameSite: "None",
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
         maxAge: 15 * 60 * 1000,
     });
 
     res.cookie("refresh_token", refreshToken, {
         httpOnly: true,
-        secure: true,
-        sameSite: "None",
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
         maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -628,6 +721,10 @@ async function handleOAuth({ provider, providerId, email, info }) {
             transaction: t,
         });
 
+        if (user && !user.is_active) {
+            throw new Error("ACCOUNT_DISABLED");
+        }
+
         if (!user) {
             user = await Users.create({
                 email,
@@ -636,6 +733,19 @@ async function handleOAuth({ provider, providerId, email, info }) {
                 is_email_verified: true
             }, { transaction: t });
 
+            const role = await Roles.findOne({
+                where: { name: "USER" },
+                transaction: t
+            });
+
+            if (!role) {
+                throw new Error("ROLE_NOT_FOUND");
+            }
+
+            await UserRoles.create({
+                user_id: user.id_user,
+                role_id: role.id_role
+            }, { transaction: t });
             isNew = true;
         }
 
