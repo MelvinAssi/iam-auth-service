@@ -17,6 +17,18 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
 }));
 
+app.use(helmet());
+app.use(helmet.hsts({
+  maxAge: 63072000,
+  includeSubDomains: true,
+  preload: true,
+}));
+
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
+}));
+
 app.get('/', (req, res) => {
   res.send('API works correctly!');
 });

@@ -23,8 +23,8 @@ const authLimiter = rateLimit({
 });
 
 const sensitiveLimiter = rateLimit({
-   windowMs: 15 * 60 * 1000,
-   max: 10
+    windowMs: 15 * 60 * 1000,
+    max: 10
 });
 
 
@@ -60,15 +60,23 @@ router.post('/signin',
     , authLimiter, loginUser);
 
 router.post('/signout', authMiddleware, logoutUser);
-router.post('/refresh',sensitiveLimiter, refreshTokens);
+router.post('/refresh', sensitiveLimiter, refreshTokens);
 router.get("/me", authMiddleware, getCurrentUser);
 
 router.post('/resend-verification', authMiddleware, resendEmailVerification);
 
-router.get('/verify-email',sensitiveLimiter, verifyEmail);
+router.get('/verify-email', sensitiveLimiter, verifyEmail);
 
-router.post('/password/request',sensitiveLimiter, requestPasswordReset);
+router.post('/password/request', sensitiveLimiter, requestPasswordReset);
 
-router.post('/password/reset',sensitiveLimiter, resetPasswordWithToken);
+router.post('/password/reset',
+    [
+        body('password')
+            .isLength({ min: 12, max: 64 }).withMessage('Password must be between 12 and 64 characters')
+            .matches(/[A-Z]/).withMessage('Must contain at least one uppercase letter')
+            .matches(/[a-z]/).withMessage('Must contain at least one lowercase letter')
+            .matches(/\d/).withMessage('Must contain at least one number')
+            .matches(/[!@#$%^&*]/).withMessage('Must contain at least one special character'),
+    ], sensitiveLimiter, resetPasswordWithToken);
 
 module.exports = router;
